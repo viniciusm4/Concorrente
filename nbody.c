@@ -49,6 +49,7 @@ typedef struct {
 void InitParticles( Particle [], ParticleV [], int );
 double ComputeForces( Particle [], Particle [], ParticleV [], int );
 double ComputeNewPos( Particle [], ParticleV [], int, double);
+void SegundoFor(double xi, double yi, double mj, double others_x, double others_y, double &vetorFx[], double &vetorFy[], unsigned int &k);
 
 int main(int argc, char **argv)
 {
@@ -87,8 +88,8 @@ int main(int argc, char **argv)
       /* Once we have the forces, we compute the changes in position */
       sim_t += ComputeNewPos( particles, pv, npart, max_f);
     }
-    for (i = 0; i < npart; i++)
-      fprintf(stdout,"%.5lf %.5lf\n", particles[i].x, particles[i].y);
+    //for (i = 0; i < npart; i++)
+      //fprintf(stdout,"%.5lf %.5lf\n", particles[i].x, particles[i].y);
     return 0;
 }
 
@@ -120,6 +121,40 @@ void InitParticles( Particle particles[], ParticleV pv[], int npart )
     }
 }
 
+void SegundoFor(double xi, double yi, double mj, double others_x, double others_y, double &vetorFx[], double &vetorFy[], unsigned int &k) 
+{
+	double rx, ry, r, rmin;
+
+	rmin = 100.0;
+	rx = xi - others_x;
+	ry = yi - others_y;
+	r = rx * rx + ry * ry;
+
+	if (r == 0.0)
+		continue;
+	if (r < rmin)
+		rmin = r;
+
+	r = r * sqrt(r);
+
+	pthread_mutex_lock(&mutex);
+	++k;
+	pthread_mutex_unlock(&mutex);
+
+	vetorFx[k] = mj * rx / r;
+	vetorFy[k] = mj * ry / r;
+	sem_wait(&semaphoreEmpty);
+
+}
+
+void ConsumidorSegundoFor(unsigned int &p, double &fx, double &vetorFx[], double &vetorFy[]) 
+{
+	fx -= vetorFx[p];
+	fy -= vetorFy[p];
+	++p;
+	sem_post(&semaphoreEmpty);
+}
+
 // ComputeForces recebe dois arrays de partículas: "myparticles[]" e "others[]", e um array de ParticleV "pv[]",
 // e um inteiro "npart" (número de partículas).
 // Calcula o deslocamento das partículas
@@ -132,6 +167,19 @@ double ComputeForces( Particle myparticles[], Particle others[], ParticleV pv[],
 
   // Iteração de 0 até o número de partículas
   for (i = 0; i < npart; i++) {
+  	unsigned int *k = 0;
+  	unsigned int *p = 0;
+
+  	sem_t semaphoreEmpty;
+  	pthreat_mutex_t mutex;
+  	pthread_t vetorThreads[npart];
+
+  	sem_init(&semaphoreEmpty, 0, npart);
+  	pthread_mutex_init(&mutex, NULL);
+
+  	double* vetorFx[npart];
+  	double* vetorFy[npart];
+
     int j;
     double xi, yi, mi, rx, ry, mj, r, fx, fy, rmin; 
     // xi, yi : posição das particulas I | mi : massa das partículas I
@@ -139,35 +187,46 @@ double ComputeForces( Particle myparticles[], Particle others[], ParticleV pv[],
     // fx, fy : força atuando sobre as partículas | r, rmin (???)
     rmin = 100.0;
 
-    xi   = myparticles[i].x;
-    yi   = myparticles[i].y;
+    //xi   = myparticles[i].x;
+    //yi   = myparticles[i].y;
 
     fx   = 0.0;
     fy   = 0.0;
 
-    // Iteração de 0 até o número de partículas
+
+    // -----------INÍCIO DO CÁLCULO THREADS SECUNDÁRIAS---------------------------------------------------------------------------------------------------------------
+    // --------------------------------------------------------------------------------------------------------------------------
     for (j = 0; j < npart; j++) {
-      // rx recebe a diferença da posição X entre as duas partículas
-      // ry recebe a diferença da posição Y entre as duas partículas 
-      rx = xi - others[j].x;
-      ry = yi - others[j].y;
+    	vetorThreads[j] = pthread_create(&vetorThreads[j], NULL, SegundoFor, myparticles[i].x, myparticles[i].y, others[j].mass, others[j].x, others[j].y, *vetorFx[], *vetorFy[], *k);
+      // -----------------------------------------------------
+      // // rx recebe a diferença da posição X entre as duas partículas
+      // // ry recebe a diferença da posição Y entre as duas partículas 
+      // rx = xi - others[j].x;
+      // ry = yi - others[j].y;
 
-      // mj recebe a massa da partícula Others
-      mj = others[j].mass;
+      // // mj recebe a massa da partícula Others
+      // mj = others[j].mass;
 
-      // r recebe a soma dos quadrados da diferença de posição das partículas
-      r  = rx * rx + ry * ry;
+      // // r recebe a soma dos quadrados da diferença de posição das partículas
+      // r  = rx * rx + ry * ry;
 
-      /* ignore overlap and same particle */
-      if (r == 0.0) continue;
+      // /* ignore overlap and same particle */
+      // if (r == 0.0) continue;
 
-      // Se r for menor que o rmin, ele recebe o valor de rmin
-      if (r < rmin) rmin = r;
+      // // Se r for menor que o rmin, ele recebe o valor de rmin
+      // if (r < rmin) rmin = r;
 
-      r  = r * sqrt(r);
-      fx -= mj * rx / r;
-      fy -= mj * ry / r;
+      // r  = r * sqrt(r);
+      // -------------------------------------------------------------------------------------------------------------
+      // fx -= mj * rx / r; // FAZER (CONSUMIDOR)
+      // fy -= mj * ry / r;
     }
+
+    for (int m = 0; m < npart; ++m) {
+    	pthread_join(vetorThreads[m], NULL);
+    }
+    // --------------------------------------------------------------------------------------------------------------------------
+    // ----------FIM DO CÁLCULO THREADS SECUNDÁRIAS----------------------------------------------------------------------------------------------------------------
 
     // Soma fx, fy atual com as novas fx, fy calculadas
     pv[i].fx += fx;
@@ -177,7 +236,8 @@ double ComputeForces( Particle myparticles[], Particle others[], ParticleV pv[],
     fx = sqrt(fx*fx + fy*fy)/rmin;
 
     // Estabelece max_f como a maior força gravitacional entre duas partículas calculada no método
-    if (fx > max_f) max_f = fx;
+    if (fx > max_f) 
+    	max_f = fx;
 
   }
 
