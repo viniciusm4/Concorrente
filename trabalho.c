@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+#include <semaphore.h>
 
 /*
  * pRNG based on http://www.cs.wm.edu/~va/software/park/park.html
@@ -11,9 +12,12 @@
 #define MULTIPLIER 48271
 #define DEFAULT    123456789
 
+sem_t prod;
 static long seed = DEFAULT;
-double dt, dt_old; /* Alterado de static para global */
-int cnt; /* number of times in loop */
+double dt, dt_old;  /* Alterado de static para global */
+int contador;       /* numero de aprticulas inicializadas */
+int tamanho_laco;   /* tamanho dos blocos de laço das threads*/
+int npart;
 
 double Random(void)
 /* ----------------------------------------------------------------
@@ -68,21 +72,46 @@ void *InitParticles( void *parametro )
 {
   ParametrosThread my_parametro = *((ParametrosThread *) parametro);
 
-  my_parametro.particles.x    = Random();
-  my_parametro.particles.y    = Random();
-  my_parametro.particles.z    = Random();
-  my_parametro.particles.mass = 1.0;
-  my_parametro.pv.xold    = my_parametro.particles.x;
-  my_parametro.pv.yold    = my_parametro.particles.y;
-  my_parametro.pv.zold    = my_parametro.particles.z;
-  my_parametro.pv.fx    = 0;
-  my_parametro.pv.fy    = 0;
-  my_parametro.pv.fz    = 0;
+  int i = my_parametro.posicao * tamanho_laco;
+  int aux = i + tamanho_laco;
 
-  particles[my_parametro.posicao] = my_parametro.particles;
-  pv[my_parametro.posicao] = my_parametro.pv;
+  for(i; i < aux; i++){
+    printf("%d\n", i);
 
-  //ComputeForces();
+    
+    particles[i].x    = Random();
+    particles[i].y    = Random();
+    particles[i].z    = Random();
+    particles[i].mass = 1.0;
+    pv[i].xold    = particles[i].x;
+    pv[i].yold    = particles[i].y;
+    pv[i].zold    = particles[i].z;
+    pv[i].fx    = 0;
+    pv[i].fy    = 0;
+    pv[i].fz    = 0;
+  
+    /* 
+    my_parametro.particles[i].x    = Random();
+    my_parametro.particles[i].y    = Random();
+    my_parametro.particles[i].z    = Random();
+    my_parametro.particles[i].mass = 1.0;
+    my_parametro.pv[i].xold    = my_parametro.particles[i].x;
+    my_parametro.pv[i].yold    = my_parametro.particles[i].y;
+    my_parametro.pv[i].zold    = my_parametro.particles[i].z;
+    my_parametro.pv[i].fx    = 0;
+    my_parametro.pv[i].fy    = 0;
+    my_parametro.pv[i].fz    = 0;
+
+    particles[i] = my_parametro.particles[i];
+    pv[i] = my_parametro.pv[i];
+    */
+    sem_wait(&prod);
+    contador++;
+    if(contador == npart){
+        i = aux;
+    }
+    sem_post(&prod);
+  }
 }
 
 double ComputeForces( Particle [], Particle [], ParticleV [], int );
@@ -91,19 +120,21 @@ double ComputeNewPos( Particle [], ParticleV [], int, double);
 int main(int argc, char **argv)
 {
 
-    int         npart, i, j;
-    int cnt; /* number of times in loop */
-    double      sim_t;       /* Simulation time */
-    int tmp;
-    if(argc != 3){
-		printf("Wrong number of parameters.\nUsage: nbody num_bodies timesteps\n");
-		exit(1);
-	}
+    int    i, j;
+    int    cnt;          /* number of times in loop */
+    int    numt;         /* numero de threads */
+    double sim_t;        /* Simulation time */
+    int    tmp;
+    if(argc != 4){
+    printf("Wrong number of parameters.\nUsage: nbody num_bodies timesteps\n");
+    exit(1);
+  }
   
-	npart = atoi(argv[1]);
-	cnt = atoi(argv[2]);
-	dt = 0.001; 
-	dt_old = 0.001;
+  npart = atoi(argv[1]);
+  cnt = atoi(argv[2]);
+  numt = atoi(argv[3]);
+  dt = 0.001; 
+  dt_old = 0.001;
 
     /* Allocate memory for particles */
     particles = (Particle *) malloc(sizeof(Particle)*npart);
@@ -117,20 +148,29 @@ int main(int argc, char **argv)
     ParametrosThread * parametros;
     parametros = (ParametrosThread *) malloc(sizeof(ParametrosThread)*npart);
 
-    pthread_t thread[npart];
-    /* Generate the initial values */
-    for (long int i = 0; i < npart; i++){
-      parametros[i].posicao = i;
-      thread[i] = pthread_create(&thread[i], NULL, InitParticles, (void *)&parametros[i]);
+    sem_init(&prod, 0, 1);
+  
+    int aux;
+    if(npart < numt){
+      aux = npart;
+    }else{
+      aux = numt;
     }
 
-    for (long int i = 0; i < npart; i++) {
+    tamanho_laco = (int)(npart / (numt-1));
+
+    pthread_t thread[aux];
+    /* Generate the initial values */
+    for (long int i = 0; i < aux; i++){
+      parametros[i].posicao = i;
+      pthread_create(&thread[i], NULL, InitParticles, (void *)&parametros[i]);
+    }
+
+    for (long int i = 0; i < aux; i++) {
       //identificador da thread
       //variavel que ira armazenar o valor retornado pela pthread_exit()
       pthread_join(thread[i], NULL);
     }
-
-    //**************************************************
 
     while (cnt--) {
       double max_f;
@@ -143,17 +183,15 @@ int main(int argc, char **argv)
       fprintf(stdout,"%.5lf %.5lf\n", particles[i].x, particles[i].y);
     return 0;
 
+    sem_destroy(&prod);
+
     //finaliza a execucao de uma thread
     pthread_exit(NULL);
 }
 
 double ComputeForces( Particle myparticles[], Particle others[], ParticleV pv[], int npart )
 {
-  // int loop = cnt;
-  // while(loop--){
-
-    //***********************************
-     double max_f;
+  double max_f;
   int i;
   max_f = 0.0;
   for (i=0; i<npart; i++) {
@@ -182,9 +220,6 @@ double ComputeForces( Particle myparticles[], Particle others[], ParticleV pv[],
     if (fx > max_f) max_f = fx;
   }
   return max_f;
-    //*******************************
-
-    //ComputeNewPos();
 }
 
 double ComputeNewPos( Particle particles[], ParticleV pv[], int npart, double max_f)
@@ -193,16 +228,14 @@ double ComputeNewPos( Particle particles[], ParticleV pv[], int npart, double ma
   double a0, a1, a2;
   double dt_new;
 
-  //regiao critica
-  a0	 = 2.0 / (dt * (dt + dt_old));
-  a2	 = 2.0 / (dt_old * (dt + dt_old));
-  a1	 = -(a0 + a2);
-  //****************************
+  a0   = 2.0 / (dt * (dt + dt_old));
+  a2   = 2.0 / (dt_old * (dt + dt_old));
+  a1   = -(a0 + a2);
 
   for (i=0; i<npart; i++) {
     double xi, yi;
-    xi	           = particles[i].x;
-    yi	           = particles[i].y;
+    xi             = particles[i].x;
+    yi             = particles[i].y;
     particles[i].x = (pv[i].fx - a1 * xi - a2 * pv[i].xold) / a0;
     particles[i].y = (pv[i].fy - a1 * yi - a2 * pv[i].yold) / a0;
     pv[i].xold     = xi;
